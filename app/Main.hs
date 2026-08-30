@@ -6,4 +6,4 @@ import Text.Parsec
 main :: IO ()
 main = do
     input <- getContents
-    print $ parse tokenParser "" input
+    print $ parse (many tokenParser) "" input

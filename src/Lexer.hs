@@ -1,24 +1,18 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Lexer(
     tokenParser,
     Token(..)
 ) where
 
-import Text.Printf
-import Text.Parsec.String(Parser)
-import Data.Char
-import Text.Parsec
+import Text.Printf (printf)
+import Data.Char (isAlphaNum, isDigit, isHexDigit, digitToInt, isAlpha, isSpace, chr)
+import Text.Parsec (Parsec, unexpected, (<|>), many1, try, many, manyTill, string, satisfy, char, oneOf, anyChar)
 
-data Spanned a = Spanned {
-    spanStart :: SourcePos,
-    spanEnd :: SourcePos,
-    spanVal :: a} deriving Show
+type Parser = Parsec String ()
 
-spanned :: Parser a -> Parser (Spanned a)
-spanned p = do
-    start <- getPosition
-    x <- p
-    end <- getPosition
-    return $ Spanned start end x
+tryString :: String -> Parser String
+tryString = try . string
 
 radixDigit :: Int -> Parser Int
 radixDigit radix = do
@@ -27,8 +21,7 @@ radixDigit radix = do
         then unexpected $ printf "character '%c' is not a valid digit." c
     else let d = digitToInt c in if d > radix
         then unexpected $ printf "digit '%c' is not in the base %d range." c radix
-    else
-        return d
+    else return d
 
 radixInteger :: Int -> Parser Integer
 radixInteger radix = do
@@ -38,9 +31,9 @@ radixInteger radix = do
 
 radixSelector :: Parser Int
 radixSelector =
-    (return 16 <$> string' "0x") <|>
-    (return 8 <$> string' "0o") <|>
-    (return 2 <$> string' "0b") <|>
+    (return 16 <$> tryString "0x") <|>
+    (return 8 <$> tryString "0o") <|>
+    (return 2 <$> tryString "0b") <|>
     return 10
 
 fractionDouble :: Bool -> Parser Double
@@ -79,14 +72,14 @@ identifier :: Parser String
 identifier = do
     first <- satisfy $ \c -> isAlpha c || c == '_'
     second <- many $ satisfy $ \c -> isAlphaNum c || c == '_'
-    return $ [first] ++ second
+    return (first : second)
 
 skipSpace :: Parser ()
-skipSpace = const () <$> satisfy isSpace
+skipSpace = const () <$> (satisfy $ \c -> isSpace c && c /= '\n')
 
 skipLineComment :: Parser ()
 skipLineComment = do
-    _ <- string' "--"
+    _ <- tryString "--"
     _ <- manyTill anyChar $ char '\n'
     return ()
 
@@ -95,17 +88,79 @@ skipComment = (do
     depth <- try $ do
         _ <- string "--"
         length <$> (many1 $ char '[')
-    _ <- manyTill anyChar $ string' $ take depth $ repeat ']'
+    _ <- manyTill anyChar $ tryString $ take depth $ repeat ']'
     return ()) <|> skipLineComment
 
 skip :: Parser ()
 skip = const () <$> (many $ (skipSpace <|> skipComment))
 
-data Token = TokenNum Number | TokenIdent String
+hexCode :: Int -> Parser Int
+hexCode 1 = radixDigit 16
+hexCode n = do
+    num <- hexCode (n - 1)
+    d <- radixDigit 16
+    return $ num * 16 + d
+
+stringLiteral :: Parser String
+stringLiteral = do
+    _ <- char '"'
+    manyTill (escapeChar <|> anyChar) $ char '"'
+
+charLiteral :: Parser Char
+charLiteral = do
+    _ <- char '\''
+    ch <- escapeChar <|> (anyChar >>= \case
+        '\'' -> unexpected "character literal cannot be empty. note: if your intention was to type the literal single quote, then use '\\''"
+        c -> return c) <|> unexpected "expected character"
+    _ <- char '\'' <|> unexpected "expected character literal terminator"
+    return ch
+
+escapeChar :: Parser Char
+escapeChar = do
+    _ <- char '\\'
+    escape <- oneOf "0abfnrtvxuU\\'\""
+    case escape of
+        '0' -> return '\0'
+        'a' -> return '\a'
+        'b' -> return '\b'
+        'f' -> return '\f'
+        'n' -> return '\n'
+        'r' -> return '\r'
+        't' -> return '\t'
+        'v' -> return '\v'
+        '\\' -> return '\\'
+        '\'' -> return '\''
+        '"' -> return '"'
+        'x' -> do
+            code <- hexCode 2 <|> unexpected "expected hex code after '\\x'. must satisfy \\xhh (where h is hexadecimal digit)"
+            if code >= 0x80
+                then unexpected $ printf "escape code %02X is invalid for ASCII. must satisfy (0x0 <= x < 0x80)" code
+                else return $ chr code
+        c | c == 'U' || c == 'u' ->
+            (chr <$> hexCode (if c == 'u' then 4 else 8)) <|>
+            (unexpected $ printf "expected hex code after '\\%c'. must satisfy \\uhhhh or \\Uhhhhhhhh (where h is hexadecimal digit)" c)
+        c -> error $ printf "escape %c should be unreachable" c
+
+indentPattern :: Parser String
+indentPattern = do
+    _ <- char '\n'
+    rawPattern <- many $ satisfy isSpace
+    let pattern = reverse $ takeWhile (/= '\n') $ reverse rawPattern
+    return pattern
+
+data Token =
+    TokenNum Number |
+    TokenIdent String |
+    TokenIndent String |
+    TokenChar Char |
+    TokenString String
     deriving Show
 
 tokenParser :: Parser Token
 tokenParser = do
     skip
-    (TokenIdent <$> identifier) <|>
-        (TokenNum <$> numLiteral)
+    (TokenIndent <$> indentPattern) <|>
+        (TokenString <$> stringLiteral) <|>
+        (TokenChar <$> charLiteral) <|>
+        (TokenNum <$> numLiteral) <|>
+        (TokenIdent <$> identifier)
