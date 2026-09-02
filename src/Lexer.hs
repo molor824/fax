@@ -7,12 +7,9 @@ module Lexer(
 
 import Text.Printf (printf)
 import Data.Char (isAlphaNum, isDigit, isHexDigit, digitToInt, isAlpha, isSpace, chr)
-import Text.Parsec (Parsec, unexpected, (<|>), many1, try, many, manyTill, string, satisfy, char, oneOf, anyChar)
+import Text.Parsec (Parsec, unexpected, (<|>), many1, try, many, manyTill, string, satisfy, char, oneOf, anyChar, string')
 
 type Parser = Parsec String ()
-
-tryString :: String -> Parser String
-tryString = try . string
 
 radixDigit :: Int -> Parser Int
 radixDigit radix = do
@@ -31,9 +28,9 @@ radixInteger radix = do
 
 radixSelector :: Parser Int
 radixSelector =
-    (return 16 <$> tryString "0x") <|>
-    (return 8 <$> tryString "0o") <|>
-    (return 2 <$> tryString "0b") <|>
+    (return 16 <$> string' "0x") <|>
+    (return 8 <$> string' "0o") <|>
+    (return 2 <$> string' "0b") <|>
     return 10
 
 fractionDouble :: Bool -> Parser Double
@@ -79,7 +76,7 @@ skipSpace = const () <$> (satisfy $ \c -> isSpace c && c /= '\n')
 
 skipLineComment :: Parser ()
 skipLineComment = do
-    _ <- tryString "--"
+    _ <- string' "--"
     _ <- manyTill anyChar $ char '\n'
     return ()
 
@@ -88,11 +85,11 @@ skipComment = (do
     depth <- try $ do
         _ <- string "--"
         length <$> (many1 $ char '[')
-    _ <- manyTill anyChar $ tryString $ take depth $ repeat ']'
+    _ <- manyTill anyChar $ string' $ take depth $ repeat ']'
     return ()) <|> skipLineComment
 
 skip :: Parser ()
-skip = const () <$> (many $ (skipSpace <|> skipComment))
+skip = const () <$> (many (skipSpace <|> skipComment))
 
 hexCode :: Int -> Parser Int
 hexCode 1 = radixDigit 16
@@ -109,9 +106,11 @@ stringLiteral = do
 charLiteral :: Parser Char
 charLiteral = do
     _ <- char '\''
-    ch <- escapeChar <|> (anyChar >>= \case
-        '\'' -> unexpected "character literal cannot be empty. note: if your intention was to type the literal single quote, then use '\\''"
-        c -> return c) <|> unexpected "expected character"
+    ch <- escapeChar <|> (
+        anyChar >>= \case
+            '\'' -> unexpected "character literal cannot be empty. note: if your intention was to type the literal single quote, then use '\\''"
+            c -> return c
+        ) <|> unexpected "expected character"
     _ <- char '\'' <|> unexpected "expected character literal terminator"
     return ch
 
@@ -145,22 +144,123 @@ indentPattern :: Parser String
 indentPattern = do
     _ <- char '\n'
     rawPattern <- many $ satisfy isSpace
-    let pattern = reverse $ takeWhile (/= '\n') $ reverse rawPattern
+    let pattern = takeWhile (/= '\n') $ reverse rawPattern
     return pattern
+
+data Symbol =
+    SymbolAdd |
+    SymbolSub |
+    SymbolMul |
+    SymbolDiv |
+    SymbolBitOr |
+    SymbolBitAnd |
+    SymbolPower |
+    SymbolNot |
+    SymbolBitNot |
+    SymbolLParen |
+    SymbolRParen |
+    SymbolRSquare |
+    SymbolLSquare |
+    SymbolRCurly |
+    SymbolLCurly |
+    SymbolShl |
+    SymbolShr |
+    SymbolSha |
+    SymbolLt |
+    SymbolGt |
+    SymbolLe |
+    SymbolGe |
+    SymbolEq |
+    SymbolNe |
+    SymbolAssign |
+    SymbolArrow |
+    SymbolSemicolon |
+    SymbolColon |
+    SymbolComma |
+    SymbolDot
+    deriving Show
+
+symParseTable :: [(String, Symbol)]
+symParseTable =
+    [
+        ("+", SymbolAdd),
+        ("->", SymbolArrow),
+        ("-", SymbolSub),
+        ("*", SymbolMul),
+        ("/", SymbolDiv),
+        ("|", SymbolBitOr),
+        ("&", SymbolBitAnd),
+        ("^", SymbolPower),
+        ("!", SymbolNot),
+        ("~", SymbolBitNot),
+        ("(", SymbolLParen),
+        (")", SymbolRParen),
+        ("[", SymbolLSquare),
+        ("]", SymbolRSquare),
+        ("{", SymbolLCurly),
+        ("}", SymbolRCurly),
+        ("<<", SymbolShl),
+        (">>", SymbolShr),
+        (">>>", SymbolSha),
+        ("<=", SymbolLe),
+        (">=", SymbolGe),
+        ("<", SymbolLt),
+        (">", SymbolGt),
+        ("==", SymbolEq),
+        ("!=", SymbolNe),
+        ("=", SymbolAssign),
+        (";", SymbolSemicolon),
+        (":", SymbolColon),
+        (",", SymbolComma),
+        (".", SymbolDot)
+    ]
+
+symbol :: [(String, Symbol)] -> Parser Symbol
+symbol ((str, sym):rest) = (const sym <$> string' str) <|> symbol rest
+symbol [] = unexpected "expected symbol"
+
+data Keyword =
+    KeywordAnd |
+    KeywordOr |
+    KeywordAs |
+    KeywordIf |
+    KeywordElse |
+    KeywordLoop |
+    KeywordDo
+    deriving Show
+
+kwdParseTable :: [(String, Keyword)]
+kwdParseTable =
+    [
+        ("and", KeywordAnd),
+        ("or", KeywordOr),
+        ("as", KeywordAs),
+        ("if", KeywordIf),
+        ("else", KeywordElse),
+        ("loop", KeywordLoop),
+        ("do", KeywordDo)
+    ]
+
+keyword :: [(String, Keyword)] -> Parser Keyword
+keyword [] = unexpected "expected keyword"
+keyword ((str, kwd):rest) = (const kwd <$> string' str) <|> keyword rest
 
 data Token =
     TokenNum Number |
+    TokenKeyword Keyword |
     TokenIdent String |
     TokenIndent String |
     TokenChar Char |
-    TokenString String
+    TokenString String |
+    TokenSymbol Symbol
     deriving Show
 
 tokenParser :: Parser Token
-tokenParser = do
-    skip
+tokenParser = skip >> (
     (TokenIndent <$> indentPattern) <|>
-        (TokenString <$> stringLiteral) <|>
-        (TokenChar <$> charLiteral) <|>
-        (TokenNum <$> numLiteral) <|>
-        (TokenIdent <$> identifier)
+    (TokenSymbol <$> symbol symParseTable) <|>
+    (TokenKeyword <$> keyword kwdParseTable) <|>
+    (TokenString <$> stringLiteral) <|>
+    (TokenChar <$> charLiteral) <|>
+    (TokenNum <$> numLiteral) <|>
+    (TokenIdent <$> identifier))

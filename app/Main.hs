@@ -5,5 +5,12 @@ import Text.Parsec
 
 main :: IO ()
 main = do
-    input <- getContents
-    print $ parse (many tokenParser) "" input
+    input <- readFile ".test.fax"
+    let result = parse (many tokenParser) "" input
+    case result of
+        Right ts -> printTokens ts
+        Left err -> print err
+
+printTokens :: [Token] -> IO ()
+printTokens [] = return ()
+printTokens (t:rest) = print t >> printTokens rest
