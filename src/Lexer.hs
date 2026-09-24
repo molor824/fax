@@ -1,13 +1,15 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Lexer(
-    tokenParser,
-    Token(..)
+    token,
+    Token(..),
+    Number(..)
 ) where
 
 import Text.Printf (printf)
 import Data.Char (isAlphaNum, isDigit, isHexDigit, digitToInt, isAlpha, isSpace, chr)
 import Text.Parsec (Parsec, unexpected, (<|>), many1, try, many, manyTill, string, satisfy, char, oneOf, anyChar, string')
+import Control.Applicative (Alternative(empty))
 
 type Parser = Parsec String ()
 
@@ -60,7 +62,10 @@ fullDouble = do
         ) <|> return value
 
 data Number = NumWhole Integer | NumReal Double
-    deriving Show
+
+instance Show Number where
+    show (NumWhole int) = show int
+    show (NumReal real) = show real
 
 numLiteral :: Parser Number
 numLiteral = NumWhole <$> (radixSelector >>= radixInteger) <|> (NumReal <$> fullDouble)
@@ -140,13 +145,6 @@ escapeChar = do
             (unexpected $ printf "expected hex code after '\\%c'. must satisfy \\uhhhh or \\Uhhhhhhhh (where h is hexadecimal digit)" c)
         c -> error $ printf "escape %c should be unreachable" c
 
-indentPattern :: Parser String
-indentPattern = do
-    _ <- char '\n'
-    rawPattern <- many $ satisfy isSpace
-    let pattern = takeWhile (/= '\n') $ reverse rawPattern
-    return pattern
-
 data Symbol =
     SymbolAdd |
     SymbolSub |
@@ -178,7 +176,7 @@ data Symbol =
     SymbolColon |
     SymbolComma |
     SymbolDot
-    deriving Show
+    deriving Eq
 
 symParseTable :: [(String, Symbol)]
 symParseTable =
@@ -215,9 +213,21 @@ symParseTable =
         (".", SymbolDot)
     ]
 
-symbol :: [(String, Symbol)] -> Parser Symbol
-symbol ((str, sym):rest) = (const sym <$> string' str) <|> symbol rest
-symbol [] = unexpected "expected symbol"
+symbol' :: [(String, Symbol)] -> Parser Symbol
+symbol' ((str, sym):rest) = (const sym <$> string' str) <|> symbol' rest
+symbol' [] = empty
+
+symbol :: Parser Symbol
+symbol = symbol' symParseTable
+
+showSymbol' :: [(String, Symbol)] -> Symbol -> String
+showSymbol' [] _ = error "should be unreachable. symParseTable might be empty!"
+showSymbol' ((str, sym):rest) sym'
+    | sym == sym' = "'" ++ str ++ "'"
+    | otherwise = showSymbol' rest sym'
+
+instance Show Symbol where
+    show = showSymbol' symParseTable
 
 data Keyword =
     KeywordAnd |
@@ -227,7 +237,7 @@ data Keyword =
     KeywordElse |
     KeywordLoop |
     KeywordDo
-    deriving Show
+    deriving Eq
 
 kwdParseTable :: [(String, Keyword)]
 kwdParseTable =
@@ -241,26 +251,49 @@ kwdParseTable =
         ("do", KeywordDo)
     ]
 
-keyword :: [(String, Keyword)] -> Parser Keyword
-keyword [] = unexpected "expected keyword"
-keyword ((str, kwd):rest) = (const kwd <$> string' str) <|> keyword rest
+asKeyword' :: [(String, Keyword)] -> String -> Maybe Keyword
+asKeyword' [] _ = Nothing
+asKeyword' ((str, kwd):rest) str'
+    | str == str' = Just kwd
+    | otherwise = asKeyword' rest str'
+
+asKeyword :: String -> Maybe Keyword
+asKeyword = asKeyword' kwdParseTable
+
+showKeyword' :: [(String, Keyword)] -> Keyword -> String
+showKeyword' [] _ = error "should be unreachable. kwdParseTable might be incomplete!"
+showKeyword' ((str, kwd):rest) kwd'
+    | kwd == kwd' = str
+    | otherwise = showKeyword' rest kwd'
+
+instance Show Keyword where
+    show = showKeyword' kwdParseTable
 
 data Token =
     TokenNum Number |
     TokenKeyword Keyword |
     TokenIdent String |
-    TokenIndent String |
     TokenChar Char |
     TokenString String |
     TokenSymbol Symbol
-    deriving Show
 
-tokenParser :: Parser Token
-tokenParser = skip >> (
-    (TokenIndent <$> indentPattern) <|>
-    (TokenSymbol <$> symbol symParseTable) <|>
-    (TokenKeyword <$> keyword kwdParseTable) <|>
+token :: Parser Token
+token = skip >> (
+    (TokenSymbol <$> symbol) <|>
     (TokenString <$> stringLiteral) <|>
     (TokenChar <$> charLiteral) <|>
     (TokenNum <$> numLiteral) <|>
-    (TokenIdent <$> identifier))
+    do
+        ident <- identifier
+        return $ case asKeyword ident of
+            Just kwd -> TokenKeyword kwd
+            Nothing -> TokenIdent ident
+    )
+
+instance Show Token where
+    show (TokenNum n) = show n
+    show (TokenKeyword kwd) = show kwd
+    show (TokenIdent str) = str
+    show (TokenString str) = show str
+    show (TokenChar ch) = show ch
+    show (TokenSymbol sym) = show sym

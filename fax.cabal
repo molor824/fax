@@ -25,6 +25,7 @@ source-repository head
 
 library
   exposed-modules:
+      Expression
       Lexer
   other-modules:
       Paths_fax
