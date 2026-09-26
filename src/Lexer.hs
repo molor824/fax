@@ -3,7 +3,9 @@
 module Lexer(
     token,
     Token(..),
-    Number(..)
+    Number(..),
+    Keyword(..),
+    Symbol(..),
 ) where
 
 import Text.Printf (printf)
@@ -30,20 +32,19 @@ radixInteger radix = do
 
 radixSelector :: Parser Int
 radixSelector =
-    (return 16 <$> string' "0x") <|>
-    (return 8 <$> string' "0o") <|>
-    (return 2 <$> string' "0b") <|>
-    return 10
+    (const 16 <$> (try $ skip >> string "0x")) <|>
+    (const 8 <$> (try $ skip >> string "0o")) <|>
+    (const 2 <$> (try $ skip >> string "0b"))
 
 fractionDouble :: Bool -> Parser Double
 fractionDouble alone = do
-    _ <- char '.'
+    _ <- if alone then (try $ skip >> char '.') else char '.'
     digits <- (if alone then many1 else many) $ radixDigit 10
     return $ foldl (\v d -> v * 10.0 + fromIntegral d) 0.0 digits
 
 pointedDouble :: Parser Double
 pointedDouble = (do
-    whole <- radixInteger 10
+    whole <- try $ skip >> radixInteger 10
     fractional <- fractionDouble False
     return $ fromIntegral whole + fractional
     ) <|> fractionDouble True
@@ -68,11 +69,11 @@ instance Show Number where
     show (NumReal real) = show real
 
 numLiteral :: Parser Number
-numLiteral = NumWhole <$> (radixSelector >>= radixInteger) <|> (NumReal <$> fullDouble)
+numLiteral = (NumWhole <$> (radixSelector >>= radixInteger)) <|> (NumReal <$> fullDouble)
 
 identifier :: Parser String
 identifier = do
-    first <- satisfy $ \c -> isAlpha c || c == '_'
+    first <- try $ skip >> (satisfy $ \c -> isAlpha c || c == '_')
     second <- many $ satisfy $ \c -> isAlphaNum c || c == '_'
     return (first : second)
 
@@ -105,12 +106,12 @@ hexCode n = do
 
 stringLiteral :: Parser String
 stringLiteral = do
-    _ <- char '"'
+    _ <- try $ skip >> char '"'
     manyTill (escapeChar <|> anyChar) $ char '"'
 
 charLiteral :: Parser Char
 charLiteral = do
-    _ <- char '\''
+    _ <- try $ skip >> char '\''
     ch <- escapeChar <|> (
         anyChar >>= \case
             '\'' -> unexpected "character literal cannot be empty. note: if your intention was to type the literal single quote, then use '\\''"
@@ -214,7 +215,7 @@ symParseTable =
     ]
 
 symbol' :: [(String, Symbol)] -> Parser Symbol
-symbol' ((str, sym):rest) = (const sym <$> string' str) <|> symbol' rest
+symbol' ((str, sym):rest) = (const sym <$> (try $ skip >> string str)) <|> symbol' rest
 symbol' [] = empty
 
 symbol :: Parser Symbol
@@ -278,7 +279,7 @@ data Token =
     TokenSymbol Symbol
 
 token :: Parser Token
-token = skip >> (
+token =
     (TokenSymbol <$> symbol) <|>
     (TokenString <$> stringLiteral) <|>
     (TokenChar <$> charLiteral) <|>
@@ -288,7 +289,6 @@ token = skip >> (
         return $ case asKeyword ident of
             Just kwd -> TokenKeyword kwd
             Nothing -> TokenIdent ident
-    )
 
 instance Show Token where
     show (TokenNum n) = show n
