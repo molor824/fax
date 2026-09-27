@@ -11,7 +11,7 @@ module Lexer(
 import Text.Printf (printf)
 import Data.Char (isAlphaNum, isDigit, isHexDigit, digitToInt, isAlpha, isSpace, chr)
 import Text.Parsec (Parsec, unexpected, (<|>), many1, try, many, manyTill, string, satisfy, char, oneOf, anyChar, string')
-import Control.Applicative (Alternative(empty))
+import Control.Applicative (optional)
 
 type Parser = Parsec String ()
 
@@ -40,26 +40,34 @@ fractionDouble :: Bool -> Parser Double
 fractionDouble alone = do
     _ <- if alone then (try $ skip >> char '.') else char '.'
     digits <- (if alone then many1 else many) $ radixDigit 10
-    return $ foldl (\v d -> v * 10.0 + fromIntegral d) 0.0 digits
+    return $ foldr (\d v -> (v + fromIntegral d) * 0.1) 0.0 digits
 
-pointedDouble :: Parser Double
+pointedDouble :: Parser Number
 pointedDouble = (do
     whole <- try $ skip >> radixInteger 10
-    fractional <- fractionDouble False
-    return $ fromIntegral whole + fractional
-    ) <|> fractionDouble True
+    fractional <- optional $ fractionDouble False
+    return $ case fractional of
+        Just frac -> NumReal $ fromIntegral whole + frac
+        Nothing -> NumWhole whole
+    ) <|> (NumReal <$> fractionDouble True)
 
-fullDouble :: Parser Double
+fullDouble :: Parser Number
 fullDouble = do
     value <- pointedDouble
+    let
+        value' = case value of
+            NumWhole int -> fromIntegral int :: Double
+            NumReal real -> real
+    
     (do
         _ <- oneOf "eE"
         sign <- oneOf "+-" <|> return '+'
         exp' <- radixInteger 10
-        return $
-            last $
-            takeWhile (\v -> v /= 0.0 && not (isInfinite v || isNaN v)) $
-            take (fromIntegral exp') $ iterate (* if sign == '+' then 10.0 else 0.1) value
+        let
+            multiplier = if sign == '+' then 10.0 else 0.1
+            values = takeWhile (\v -> v /= 0.0 && not (isInfinite v || isNaN v)) $
+                take (fromIntegral exp') $ iterate (* multiplier) value'
+        return $ NumReal $ if values == [] then 0.0 else last values
         ) <|> return value
 
 data Number = NumWhole Integer | NumReal Double
@@ -69,7 +77,7 @@ instance Show Number where
     show (NumReal real) = show real
 
 numLiteral :: Parser Number
-numLiteral = (NumWhole <$> (radixSelector >>= radixInteger)) <|> (NumReal <$> fullDouble)
+numLiteral = (NumWhole <$> (radixSelector >>= radixInteger)) <|> fullDouble
 
 identifier :: Parser String
 identifier = do
@@ -182,8 +190,15 @@ data Symbol =
 symParseTable :: [(String, Symbol)]
 symParseTable =
     [
-        ("+", SymbolAdd),
+        (">>>", SymbolSha),
         ("->", SymbolArrow),
+        ("<<", SymbolShl),
+        (">>", SymbolShr),
+        ("<=", SymbolLe),
+        (">=", SymbolGe),
+        ("==", SymbolEq),
+        ("!=", SymbolNe),
+        ("+", SymbolAdd),
         ("-", SymbolSub),
         ("*", SymbolMul),
         ("/", SymbolDiv),
@@ -198,15 +213,8 @@ symParseTable =
         ("]", SymbolRSquare),
         ("{", SymbolLCurly),
         ("}", SymbolRCurly),
-        ("<<", SymbolShl),
-        (">>", SymbolShr),
-        (">>>", SymbolSha),
-        ("<=", SymbolLe),
-        (">=", SymbolGe),
         ("<", SymbolLt),
         (">", SymbolGt),
-        ("==", SymbolEq),
-        ("!=", SymbolNe),
         ("=", SymbolAssign),
         (";", SymbolSemicolon),
         (":", SymbolColon),
@@ -215,8 +223,8 @@ symParseTable =
     ]
 
 symbol' :: [(String, Symbol)] -> Parser Symbol
-symbol' ((str, sym):rest) = (const sym <$> (try $ skip >> string str)) <|> symbol' rest
-symbol' [] = empty
+symbol' ((str, sym):rest) = try (const sym <$> (skip >> string str)) <|> symbol' rest
+symbol' [] = unexpected "expected symbol"
 
 symbol :: Parser Symbol
 symbol = symbol' symParseTable
@@ -280,10 +288,10 @@ data Token =
 
 token :: Parser Token
 token =
-    (TokenSymbol <$> symbol) <|>
+    (TokenNum <$> numLiteral) <|>
     (TokenString <$> stringLiteral) <|>
     (TokenChar <$> charLiteral) <|>
-    (TokenNum <$> numLiteral) <|>
+    (TokenSymbol <$> symbol) <|>
     do
         ident <- identifier
         return $ case asKeyword ident of

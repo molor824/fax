@@ -12,7 +12,10 @@ data Expr =
     ExprString String |
     ExprChar Char |
     ExprArray [Expr] |
-    ExprTuple [Expr]
+    ExprTuple [Expr] |
+    ExprCall (Expr, [Expr]) |
+    ExprProperty (Expr, String)
+    deriving Show
 
 unexpectedGot :: String -> Token -> Parser a
 unexpectedGot msg t = unexpected $ printf "%s, got %s" msg (show t)
@@ -47,17 +50,20 @@ tokenSymbol sym = token >>= \case
     TokenSymbol sym1 | sym == sym1 -> return sym
     t -> unexpectedGot (printf "expected symbol %s" $ show sym) t
 
+args :: Parser [Expr]
+args = expression `sepEndBy` (try $ tokenSymbol SymbolComma)
+
 array :: Parser Expr
 array = do
     _ <- try $ tokenSymbol SymbolLSquare
-    elems <- expression `sepEndBy` (tokenSymbol SymbolComma)
+    elems <- args
     _ <- tokenSymbol SymbolRSquare
     return $ ExprArray elems
 
 tuple :: Parser Expr
 tuple = do
     _ <- try $ tokenSymbol SymbolLCurly
-    elems <- expression `sepEndBy` (tokenSymbol SymbolComma)
+    elems <- args
     _ <- tokenSymbol SymbolRCurly
     return $ ExprTuple elems
 
@@ -78,5 +84,25 @@ primary =
     (ExprString <$> (try tokenString)) <|>
     (ExprIdent <$> (try tokenIdent))
 
+postfix :: Parser Expr
+postfix = do
+    operand <- primary
+    call operand <|>
+        property operand <|>
+        return operand
+
+call :: Expr -> Parser Expr
+call operand = do
+    _ <- try $ tokenSymbol SymbolLParen
+    elems <- args
+    _ <- tokenSymbol SymbolRParen
+    return $ ExprCall (operand, elems)
+
+property :: Expr -> Parser Expr
+property operand = do
+    _ <- try $ tokenSymbol SymbolDot
+    name <- tokenIdent
+    return $ ExprProperty (operand, name)
+
 expression :: Parser Expr
-expression = primary
+expression = postfix

@@ -1,16 +1,15 @@
 module Main (main) where
 
-import Lexer
+import Expression
 import Text.Parsec
 
 main :: IO ()
 main = do
-    input <- readFile ".test.fax"
-    let result = parse (many tokenParser) "" input
-    case result of
-        Right ts -> printTokens ts
+    input <- getContents
+    case parse (many1 expression) "" input of
+        Right ts -> printExpr ts
         Left err -> print err
 
-printTokens :: [Token] -> IO ()
-printTokens [] = return ()
-printTokens (t:rest) = print t >> printTokens rest
+printExpr :: [Expr] -> IO ()
+printExpr [] = return ()
+printExpr (t:rest) = print t >> printExpr rest
